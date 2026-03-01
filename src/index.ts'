@@ -1,0 +1,92 @@
+import { readConfig, setUser } from "./config";
+import {
+  createUser,
+  getUserByName,
+  deleteAllUsers,
+} from "./lib/db/queries/users";
+import {
+  createFeed,
+  getFeedByUrl,
+  createFeedFollow,
+  getFeedFollowsForUser,
+  deleteFeedFollowByUrl,
+  getPostsForUser,
+} from "./lib/db/queries/feeds";
+import { db } from "./lib/db";
+import { users } from "./lib/db/schema";
+import { eq } from "drizzle-orm";
+import type { User } from "./lib/db/schema";
+
+type CommandHandler = (args: string[]) => Promise<void>;
+
+type UserCommandHandler = (
+  cmdName: string,
+  user: User,
+  ...args: string[]
+) => Promise<void>;
+
+function middlewareLoggedIn(handler: UserCommandHandler): CommandHandler {
+  return async (args: string[]) => {
+    const config = readConfig();
+    const [user] = await db
+      .select()
+      .from(users)
+      .where(eq(users.name, config.currentUserName));
+
+    if (!user) process.exit(1);
+
+    const cmdName = process.argv[2];
+    await handler(cmdName, user, ...args);
+  };
+}
+
+const commands: Record<string, CommandHandler> = {
+  register: async (args) => {
+    if (args.length < 1) process.exit(1);
+    const name = args[0];
+    const existing = await getUserByName(name);
+    if (existing) process.exit(1);
+
+    await createUser(name);
+    setUser(name);
+  },
+
+  login: async (args) => {
+    if (args.length < 1) process.exit(1);
+    const name = args[0];
+    const user = await getUserByName(name);
+    if (!user) process.exit(1);
+
+    setUser(name);
+  },
+
+  reset: async () => {
+    await deleteAllUsers();
+  },
+
+  browse: middlewareLoggedIn(async (_cmd, user, ...args) => {
+    const limit = args[0] ? Number(args[0]) : 2;
+    const posts = await getPostsForUser(user.id, limit);
+
+    for (const post of posts) {
+      console.log("-----");
+      console.log(post.title);
+      console.log(post.url);
+      console.log(post.publishedAt);
+    }
+  }),
+};
+
+async function runCommand() {
+  const [, , command, ...args] = process.argv;
+  const handler = commands[command];
+  if (!handler) process.exit(1);
+  await handler(args);
+}
+
+async function main() {
+  await runCommand();
+  process.exit(0);
+}
+
+main();
